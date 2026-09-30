@@ -55,9 +55,16 @@ test("playing: cursor hidden, difficulty locked, scores go up", async ({ page })
 
 test("clearing a level advances to the next one", async ({ page }) => {
   await page.click("#start");
-  await autopilot(page);
-  await bb(page, b => b.bricks.filter(k => !k.solid && k.hp > 0).slice(1).forEach(k => { k.hp = 0; }));
-  await expect.poll(() => bb(page, b => b.level), { timeout: 40000 }).toBe(1);
+  // leave one brick and park the paddle so its left laser (8px in from the edge) is under it.
+  // Waiting for a random ball to find the last brick was flaky; the ball stays on the paddle here.
+  await bb(page, b => {
+    const alive = b.bricks.filter(k => !k.solid && k.hp > 0);
+    alive.slice(1).forEach(k => { k.hp = 0; });
+    const last = alive[0];
+    b.applyPower("laser");
+    b.setPaddle(last.x + last.w / 2 - 8);
+  });
+  await expect.poll(() => bb(page, b => b.level), { timeout: 10000 }).toBe(1);
   await expect(page.locator("#level")).toHaveText("2");
 });
 
