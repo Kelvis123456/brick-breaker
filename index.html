@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Brick Breaker</title>
+  <style>
+    :root { --bg: #0c0d1e; --panel: #17183a; --text: #e8e8f5; --muted: #9d9dc4; --accent: #7c5cff; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: radial-gradient(ellipse at 50% -10%, #2a2360, var(--bg) 65%);
+      color: var(--text); font-family: system-ui, -apple-system, sans-serif;
+    }
+    .wrap { width: 100%; max-width: 672px; display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+    h1 {
+      margin: 0 auto; width: fit-content; font-size: 32px; letter-spacing: -.02em;
+      background: linear-gradient(90deg, #ff5c7a, #feca57, #1dd1a1, #48dbfb, #7c5cff);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .stat { background: var(--panel); border-radius: 10px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.06); }
+    .stat small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .stat b { font-size: 20px; font-variant-numeric: tabular-nums; }
+    #lives { color: #ff5c7a; letter-spacing: 2px; }
+    canvas {
+      width: 100%; aspect-ratio: 4 / 3; display: block; border-radius: 14px; touch-action: none; cursor: none;
+      box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.07);
+    }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center; }
+    button, select {
+      font: inherit; font-size: 15px; font-weight: 600; border-radius: 9px; padding: 10px 18px;
+      border: 1px solid rgba(255,255,255,.1); background: var(--panel); color: var(--text); cursor: pointer;
+    }
+    button.primary { background: var(--accent); border-color: transparent; color: #fff; min-width: 120px; }
+    button:hover:not(:disabled), select:hover { filter: brightness(1.2); }
+    button:disabled { opacity: .4; cursor: default; }
+    button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .hint { text-align: center; color: var(--muted); font-size: 13px; }
+    .legend { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+    .legend i { display: inline-block; width: 22px; height: 12px; border-radius: 6px; vertical-align: -1px; margin-right: 5px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Brick Breaker</h1>
+    <div class="hud" aria-live="polite">
+      <div class="stat"><small>Score</small><b id="score">0</b></div>
+      <div class="stat"><small>Best</small><b id="best">0</b></div>
+      <div class="stat"><small>Level</small><b id="level">1</b></div>
+      <div class="stat"><small>Lives</small><b id="lives">♥♥♥</b></div>
+    </div>
+    <canvas id="game" aria-label="Brick Breaker game area"></canvas>
+    <div class="controls">
+      <button id="start" class="primary">Start</button>
+      <button id="pause">Pause</button>
+      <label>
+        <select id="difficulty" aria-label="Difficulty">
+          <option value="easy">Easy · 5 lives</option>
+          <option value="normal" selected>Normal · 3 lives</option>
+          <option value="hard">Hard · 2 lives</option>
+        </select>
+      </label>
+      <button id="mute" aria-pressed="true">Sound: on</button>
+    </div>
+    <div class="legend">
+      <span><i style="background:#1dd1a1"></i>Wide paddle</span>
+      <span><i style="background:#48dbfb"></i>Multiball</span>
+      <span><i style="background:#feca57"></i>Slow ball</span>
+      <span><i style="background:#ff5c7a"></i>Extra life</span>
+    </div>
+    <div class="hint">Mouse / touch / ← → to move · Space to launch · P pause · M mute · Enter start</div>
+  </main>
+  <script src="game.js"></script>
+</body>
+</html>
