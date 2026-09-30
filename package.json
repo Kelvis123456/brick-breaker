@@ -2,7 +2,6 @@
   "name": "brick-breaker",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "test": "vitest run --dir src",
     "build": "tsc --noEmit && vite build",
@@ -19,5 +18,6 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "vitest": "^5.0.2"
-  }
+  },
+  "private": true
 }
