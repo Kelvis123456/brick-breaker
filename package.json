@@ -2,16 +2,22 @@
   "name": "brick-breaker",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc game.ts --strict --target es2022 --lib es2022,dom"
+    "test": "vitest run --dir src",
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "e2e": "playwright test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
-    "typescript": "^7.0.2"
-  }
+    "@playwright/test": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  },
+  "private": true
 }
