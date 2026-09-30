@@ -1,5 +1,7 @@
 # Brick Breaker
 
+**Play it:** https://brick-breaker-kelvis.vercel.app
+
 A brick breaker in TypeScript and a plain `<canvas>`, with no game engine or framework. It started as a 30-minute technical assessment, and I kept going afterwards to finish it properly.
 
 ## What's in it
