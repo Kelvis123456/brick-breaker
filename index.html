@@ -6,12 +6,18 @@
   <meta name="description" content="A brick breaker with six levels, a boss, power-ups and combos. Built in TypeScript on a canvas." />
   <meta name="theme-color" content="#0c0d1e" />
   <title>Brick Breaker</title>
+  <meta property="og:title" content="Brick Breaker" />
+  <meta property="og:description" content="Six levels, a boss, power-ups and combos. Built in TypeScript on a canvas." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://brick-breaker-kelvis.vercel.app/" />
+  <meta property="og:image" content="https://brick-breaker-kelvis.vercel.app/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2317183a'/><rect x='5' y='7' width='10' height='5' rx='1.5' fill='%23ff5c7a'/><rect x='17' y='7' width='10' height='5' rx='1.5' fill='%23feca57'/><circle cx='16' cy='19' r='3' fill='%23fff'/><rect x='9' y='24' width='14' height='3' rx='1.5' fill='%237c5cff'/></svg>" />
   <style>
-    :root { --bg: #0c0d1e; --panel: #17183a; --text: #e8e8f5; --muted: #9d9dc4; --accent: #7c5cff; }
+    :root { --bg: #0c0d1e; --panel: #17183a; --text: #e8e8f5; --muted: #9d9dc4; --accent: #6d4aff; --accent-hover: #6342f0; --ease-out: cubic-bezier(0.23, 1, 0.32, 1); }
     * { box-sizing: border-box; }
     body {
-      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center;
       background: radial-gradient(ellipse at 50% -10%, #2a2360, var(--bg) 65%);
       color: var(--text); font-family: system-ui, -apple-system, sans-serif;
     }
@@ -26,24 +32,37 @@
     .stat, .board { background: var(--panel); border-radius: 10px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.06); }
     .stat small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
     .stat b { font-size: 20px; font-variant-numeric: tabular-nums; }
-    #lives { color: #ff5c7a; letter-spacing: 2px; }
+    #lives { display: inline-block; color: #ff5c7a; letter-spacing: 2px; }
+    #lives.lost { animation: life-lost 220ms var(--ease-out); }
+    @keyframes life-lost { 50% { transform: scale(1.12); } }
     canvas {
       width: 100%; aspect-ratio: 4 / 3; display: block; border-radius: 14px; touch-action: none;
+      /* phone in landscape: fit the height too, or the paddle sits below the fold and can't be scrolled to */
+      max-height: calc(100dvh - 32px); margin: 0 auto; width: auto; max-width: 100%;
       box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.07);
     }
     canvas.playing { cursor: none; }
     .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center; }
     button, select, input {
-      font: inherit; font-size: 15px; font-weight: 600; border-radius: 9px; padding: 10px 18px;
+      font: inherit; font-size: 15px; font-weight: 600; border-radius: 10px; padding: 10px 16px;
       border: 1px solid rgba(255,255,255,.1); background: var(--panel); color: var(--text);
     }
-    button, select { cursor: pointer; }
+    button, select { cursor: pointer; -webkit-tap-highlight-color: transparent; transition: transform 160ms var(--ease-out), background-color 150ms ease; }
+    button:active:not(:disabled) { transform: scale(0.97); }
+    /* white on the accent is 5.15:1 (AA); the old #7c5cff was 4.35 and brightening it on hover dropped to 3.5 */
     button.primary { background: var(--accent); border-color: transparent; color: #fff; min-width: 120px; }
-    button:hover:not(:disabled), select:hover:not(:disabled) { filter: brightness(1.2); }
+    #pause { min-width: 104px; }
+    #mute { min-width: 124px; }
+    @media (hover: hover) and (pointer: fine) {
+      button:hover:not(:disabled), select:hover:not(:disabled) { background: #1f2050; }
+      button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    }
     button:disabled, select:disabled { opacity: .4; cursor: default; }
     button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .hint { text-align: center; color: var(--muted); font-size: 13px; margin: 0; }
     .hint span { white-space: nowrap; }
+    .hint .touch { display: none; }
+    @media (hover: none) { .hint .keys { display: none; } .hint .touch { display: inline; } }
     .legend { display: flex; gap: 6px 14px; justify-content: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
     .legend i { display: inline-block; width: 22px; height: 12px; border-radius: 6px; vertical-align: -1px; margin-right: 5px; }
     .board ol { margin: 0; padding: 0; list-style: none; counter-reset: rank; }
@@ -64,15 +83,28 @@
       padding: 20px; width: min(340px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.6);
     }
     dialog::backdrop { background: rgba(8,8,20,.6); }
+    dialog[open], dialog[open]::backdrop { transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+    dialog[open] { @starting-style { opacity: 0; transform: scale(.96); } }
+    dialog[open]::backdrop { @starting-style { opacity: 0; } }
+    dialog .final { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+    dialog .final b { color: var(--text); font-variant-numeric: tabular-nums; }
     dialog h2 { font-size: 20px; color: #feca57; text-transform: none; letter-spacing: 0; }
     dialog label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
     dialog input { width: 100%; background: #0f1026; }
     dialog menu { display: flex; flex-direction: row-reverse; gap: 8px; justify-content: flex-start; margin: 16px 0 0; padding: 0; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    input { font-size: 16px; } /* under 16px iOS zooms into the name field */
     @media (max-width: 420px) {
       .stat { padding: 6px 8px; }
       .stat b { font-size: 16px; }
-      button, select { padding: 9px 12px; font-size: 14px; }
+      button, select { padding: 8px 12px; font-size: 14px; }
+      /* 2x2 instead of 3 + a lonely "Sound" on its own row */
+      .controls { display: grid; grid-template-columns: 1fr 1fr; }
+      .controls > * { min-width: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #lives.lost { animation: none; }
+      button, dialog[open], dialog[open]::backdrop { transition: none; }
     }
   </style>
 </head>
@@ -83,10 +115,10 @@
       <div class="stat"><small>Score</small><b id="score">0</b></div>
       <div class="stat"><small>Best</small><b id="best">0</b></div>
       <div class="stat"><small>Level</small><b id="level">1</b></div>
-      <div class="stat"><small>Lives</small><b id="lives">♥♥♥</b></div>
+      <div class="stat"><small>Lives</small><b id="lives" role="img" aria-label="3 lives">♥♥♥</b></div>
     </div>
     <p id="status" class="sr-only" aria-live="polite"></p>
-    <canvas id="game" aria-label="Brick Breaker game area"></canvas>
+    <canvas id="game" role="img" aria-label="Brick Breaker game area"></canvas>
     <div class="controls">
       <button id="start" class="primary">Start</button>
       <button id="pause">Pause</button>
@@ -105,7 +137,7 @@
       <span><i style="background:#ff9f43"></i>Fireball</span>
       <span><i style="background:#ff5c7a"></i>Extra life</span>
     </div>
-    <p class="hint"><span>Mouse / touch / ← → to move</span> · <span>Space to launch</span> · <span>P pause</span> · <span>M mute</span> · <span>Enter start</span></p>
+    <p class="hint"><span class="keys"><span>Mouse or ← → to move</span> · <span>Space launch</span> · <span>P pause</span> · <span>M mute</span></span><span class="touch">Drag anywhere on the game to move · tap to launch</span></p>
     <section class="board" aria-labelledby="top-title">
       <h2 id="top-title">Top scores</h2>
       <ol id="top"></ol>
@@ -115,6 +147,7 @@
   <dialog id="nameDialog" aria-labelledby="nameTitle">
     <form method="dialog">
       <h2 id="nameTitle">New high score!</h2>
+      <p class="final" id="nameScore"></p>
       <label>Your name
         <input id="nameInput" autocomplete="nickname" spellcheck="false" />
       </label>
