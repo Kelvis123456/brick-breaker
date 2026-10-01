@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bounce, circleRect, clamp, isCleared, paddleBounce, parseLevel, pointsFor, steer, MAX_COMBO, type Brick } from "./physics";
+import { ballSpeed, bounce, circleRect, clamp, isCleared, paddleBounce, parseLevel, patrol, pointsFor, steer, MAX_COMBO, MAX_SPEED, type Brick } from "./physics";
 import { LEVELS, levelAt } from "./levels";
 
 const box = { x: 100, y: 100, w: 60, h: 20 };
@@ -34,6 +34,40 @@ describe("circleRect", () => {
     // 4px left of the corner, 2px above it: mostly a side hit
     expect(circleRect(96, 98, R, box)).toMatchObject({ nx: -1, ny: 0 });
     expect(circleRect(98, 96, R, box)).toMatchObject({ nx: 0, ny: -1 });
+  });
+
+  it("with a velocity, treats a corner touch as vertical when the ball moves away from that side", () => {
+    // 3px right of the bottom-right corner, 1px below it: geometrically a side hit,
+    // but the ball is rising and drifting right, i.e. away from the right face
+    expect(circleRect(163, 121, R, box, { x: 0.3, y: -1 })).toMatchObject({ nx: 0, ny: 1, y: 120 + R });
+  });
+
+  it("with a velocity, keeps the side hit when the ball moves into that side", () => {
+    expect(circleRect(163, 121, R, box, { x: -0.5, y: -1 })).toMatchObject({ nx: 1, ny: 0 });
+    // dead-center side contact has no vertical component to fall back to
+    expect(circleRect(164, 110, R, box, { x: 0.5, y: -1 })).toMatchObject({ nx: 1, ny: 0 });
+  });
+
+  it("damages a seam pair once, not back and forth, for a fast ball rising into the gap", () => {
+    // two bricks 6px apart, ball rising at the 760px/s cap (6.3px per 1/120s step)
+    const a = { x: 0, y: 0, w: 57, h: 20 }, b = { x: 63, y: 0, w: 57, h: 20 };
+    for (const into of [1, 3]) {
+      let x = 60 + into, y = 30, vx = 0.15, vy = -1;
+      const hits: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        x += vx * 6.3; y += vy * 6.3;
+        for (const [name, br] of [["A", a], ["B", b]] as const) {
+          const h = circleRect(x, y, R, br, { x: vx, y: vy });
+          if (!h) continue;
+          x = h.x; y = h.y;
+          ({ x: vx, y: vy } = bounce({ x: vx, y: vy }, h));
+          hits.push(name);
+          break;
+        }
+      }
+      expect(hits.length).toBe(1);
+      expect(vy).toBeGreaterThan(0); // bounced back down instead of sliding up the seam
+    }
   });
 
   it("pushes a ball whose center is inside out through the nearest side", () => {
@@ -188,5 +222,47 @@ describe("clamp", () => {
     expect(clamp(-1, 0, 5)).toBe(0);
     expect(clamp(9, 0, 5)).toBe(5);
     expect(clamp(3, 0, 5)).toBe(3);
+  });
+});
+
+describe("ballSpeed", () => {
+  it("scales with level and boost below the cap", () => {
+    expect(ballSpeed(360, 0, 1, false)).toBe(360);
+    expect(ballSpeed(360, 10, 1, false)).toBeCloseTo(360 * 1.7);
+  });
+
+  it("caps at MAX_SPEED", () => {
+    expect(ballSpeed(430, 30, 1.35, false)).toBe(MAX_SPEED);
+  });
+
+  it("still slows the ball after the cap kicks in (late laps)", () => {
+    expect(ballSpeed(430, 30, 1.35, true)).toBeCloseTo(MAX_SPEED * 0.7);
+    expect(ballSpeed(430, 30, 1.35, true)).toBeLessThan(ballSpeed(430, 30, 1.35, false));
+  });
+});
+
+describe("patrol", () => {
+  it("moves freely inside the lane", () => {
+    expect(patrol(100, 90, 160, 0.1, 20, 620)).toEqual({ x: 109, vx: 90 });
+  });
+
+  it("bounces off the left bound without crossing it", () => {
+    expect(patrol(21, -90, 160, 0.1, 20, 620)).toEqual({ x: 20, vx: 90 });
+  });
+
+  it("bounces off the right bound with its right edge on it", () => {
+    expect(patrol(459, 90, 160, 0.1, 20, 620)).toEqual({ x: 460, vx: -90 });
+  });
+
+  it("leaves room for a ball against the wall: lane starts a ball-width in", () => {
+    const GAP = 6, R = 7, W = 640;
+    let x = 200, vx = -300, minX = Infinity, maxRight = 0;
+    for (let i = 0; i < 2000; i++) {
+      ({ x, vx } = patrol(x, vx, 160, 1 / 120, GAP + 2 * R, W - GAP - 2 * R));
+      minX = Math.min(minX, x); maxRight = Math.max(maxRight, x + 160);
+    }
+    // a ball hugging a wall spans 2R from it; the boss never reaches into that lane
+    expect(minX).toBeGreaterThanOrEqual(2 * R);
+    expect(maxRight).toBeLessThanOrEqual(W - 2 * R);
   });
 });
