@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { COLS, MAX_COMBO, bounce, circleRect, clamp, isCleared, paddleBounce, parseLevel, pointsFor, steer, type Brick } from "./physics";
+import { COLS, MAX_COMBO, ballSpeed, bounce, circleRect, clamp, isCleared, paddleBounce, parseLevel, patrol, pointsFor, steer, type Brick } from "./physics";
 import { LEVELS, levelAt } from "./levels";
 import { MAX_NAME, insertScore, parseScores, qualifies, type ScoreEntry } from "./scores";
 
@@ -14,6 +14,9 @@ const diffSel = $<HTMLSelectElement>("difficulty");
 const topList = $<HTMLOListElement>("top");
 const nameDialog = $<HTMLDialogElement>("nameDialog");
 const nameInput = $<HTMLInputElement>("nameInput");
+const nameScore = $("nameScore");
+// shake, long trails and big particle bursts off; flashes and fades stay (reduced, not zero)
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
 // ---------- constants ----------
 const W = 640, H = 480;
@@ -38,6 +41,7 @@ const DIFF = {
 type Diff = keyof typeof DIFF;
 
 type PowerType = "wide" | "multi" | "slow" | "life" | "laser" | "fire";
+const POWER_TIME: Partial<Record<PowerType, number>> = { wide: 12, slow: 9, laser: 8, fire: 6 };
 const POWER: Record<PowerType, { color: string; label: string; msg: string }> = {
   wide: { color: "#1dd1a1", label: "W", msg: "WIDE!" },
   multi: { color: "#48dbfb", label: "M", msg: "MULTIBALL!" },
@@ -65,6 +69,7 @@ let score = 0, lives = 3, level = 0, combo = 0, boost = 1;
 let paddleX = (W - PADDLE_W) / 2, paddleW = PADDLE_W;
 let wideT = 0, slowT = 0, laserT = 0, fireT = 0, laserCd = 0;
 let shake = 0, clearT = 0, clearBonus = 0;
+let stateT = 0, levelT = 0; // seconds since the last state change / level start, for entrances
 let newBest = false;
 let pending: Omit<ScoreEntry, "name"> | null = null;
 let lastRank = -1;
@@ -75,7 +80,9 @@ const store = {
   set(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
 };
 let top = parseScores(store.get("bb-top"));
-let best = Math.max(Number(store.get("bb-best")) || 0, top[0]?.score ?? 0);
+// Number.isFinite: a hand-edited "Infinity" made the best score unbeatable
+const storedBest = Number(store.get("bb-best"));
+let best = Math.max(Number.isFinite(storedBest) ? storedBest : 0, top[0]?.score ?? 0);
 let muted = store.get("bb-muted") === "1";
 
 // ---------- sound (synthesized, no assets) ----------
@@ -84,6 +91,7 @@ function beep(freq: number, dur = 0.08, type: OscillatorType = "square", vol = 0
   if (muted) return;
   try {
     audio ??= new AudioContext();
+    if (audio.state !== "running") void audio.resume(); // iOS suspends it after calls/backgrounding
     const o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime;
     o.type = type; o.frequency.setValueAtTime(freq, t);
     g.gain.setValueAtTime(vol, t);
@@ -96,6 +104,7 @@ const arpeggio = (notes: number[], gap = 90) => notes.forEach((n, i) => setTimeo
 
 // ---------- setup ----------
 function setState(s: State) {
+  if (s !== state) stateT = 0;
   state = s;
   canvas.classList.toggle("playing", s === "playing");
   pauseBtn.disabled = s !== "playing" && s !== "paused";
@@ -120,13 +129,14 @@ function stuckBall(): Ball {
 }
 
 function resetEffects() {
-  wideT = slowT = laserT = fireT = 0;
+  wideT = slowT = laserT = fireT = laserCd = 0;
   powers = []; bolts = [];
   combo = 0; boost = 1;
 }
 
 function startLevel(n: number) {
   level = n;
+  levelT = 0;
   bricks = buildLevel(n);
   balls = [stuckBall()];
   resetEffects();
@@ -142,6 +152,9 @@ function newGame() {
   paddleX = (W - PADDLE_W) / 2; paddleW = PADDLE_W;
   particles = []; floaters = [];
   startLevel(0);
+  // on a landscape phone the title and HUD push the paddle below the fold, and the
+  // canvas itself can't be swiped to scroll (touch-action: none); bring it into view
+  canvas.scrollIntoView({ block: "nearest" });
   startBtn.textContent = "Restart";
   renderTop();
 }
@@ -149,14 +162,13 @@ function newGame() {
 function updateHud() {
   scoreEl.textContent = score.toLocaleString();
   livesEl.textContent = lives > 0 ? "♥".repeat(Math.min(lives, 8)) : "—";
-  livesEl.setAttribute("aria-label", `${lives} lives`);
+  livesEl.setAttribute("aria-label", `${lives} ${lives === 1 ? "life" : "lives"}`);
   levelEl.textContent = String(level + 1);
-  if (score > best) {
-    best = score; newBest = true;
-    store.set("bb-best", String(best));
-  }
+  if (score > best) { best = score; newBest = true; } // persisted on game over / page hide, not on every hit
   bestEl.textContent = best.toLocaleString();
 }
+
+function saveBest() { if (newBest) store.set("bb-best", String(best)); }
 
 function renderTop() {
   if (!top.length) {
@@ -178,10 +190,7 @@ function renderTop() {
   }));
 }
 
-function speed() {
-  const s = DIFF[diff].speed * (1 + 0.07 * level) * boost * (slowT > 0 ? 0.7 : 1);
-  return Math.min(s, 760);
-}
+const speed = () => ballSpeed(DIFF[diff].speed, level, boost, slowT > 0);
 
 // ---------- gameplay ----------
 function launch() {
@@ -194,6 +203,7 @@ function launch() {
 }
 
 function burst(x: number, y: number, color: string, n = 14) {
+  if (reduceMotion.matches) n = Math.min(n, 4);
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * 220;
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60, life: 0.5 + Math.random() * 0.4, color });
@@ -203,7 +213,7 @@ function burst(x: number, y: number, color: string, n = 14) {
 /** Stack floaters that spawn on top of each other instead of drawing them in one spot. */
 function addFloater(x: number, y: number, text: string) {
   const near = floaters.filter(f => f.life > 0.5 && Math.abs(f.x - x) < 70 && Math.abs(f.y - y) < 60).length;
-  floaters.push({ x, y: y - near * 18, text, life: 0.9 });
+  floaters.push({ x, y: y - near * 18 * ui, text, life: 0.9 }); // text is scaled by ui on phones, so is the spacing
 }
 
 const brickColor = (br: Brick) => ROW_COLORS[br.row % ROW_COLORS.length];
@@ -279,6 +289,7 @@ function applyPower(type: PowerType) {
 
 function loseLife() {
   lives--;
+  livesEl.classList.remove("lost"); void livesEl.offsetWidth; livesEl.classList.add("lost"); // replay the pulse
   resetEffects();
   shake = 10;
   beep(150, 0.35, "sawtooth", 0.05);
@@ -286,14 +297,22 @@ function loseLife() {
   if (lives > 0) { balls = [stuckBall()]; return; }
 
   setState("over");
+  saveBest();
   startBtn.textContent = "Play again";
   setTimeout(() => arpeggio([392, 330, 262], 140), 200);
   announce(`Game over. Score ${score}.`);
   if (qualifies(top, score)) {
     pending = { score, level: level + 1, diff };
     nameInput.value = store.get("bb-name") ?? "";
-    nameDialog.showModal();
-    nameInput.select();
+    const pts = document.createElement("b");
+    pts.textContent = score.toLocaleString();
+    nameScore.replaceChildren("You scored ", pts, ` · level ${level + 1}`);
+    // let "Game Over" and the falling notes land before the dialog covers them
+    setTimeout(() => {
+      if (state !== "over" || !pending || nameDialog.open) return;
+      nameDialog.showModal();
+      nameInput.select();
+    }, 700);
   }
 }
 
@@ -310,10 +329,9 @@ function step(dt: number) {
   laserT = Math.max(0, laserT - dt);
   fireT = Math.max(0, fireT - dt);
 
-  // boss patrols side to side
+  // boss patrols side to side, leaving a ball-wide lane at each wall
   for (const br of bricks) if (br.vx && br.hp > 0) {
-    br.x += br.vx * dt;
-    if (br.x < GAP || br.x + br.w > W - GAP) { br.vx = -br.vx; br.x = clamp(br.x, GAP, W - GAP - br.w); }
+    ({ x: br.x, vx: br.vx } = patrol(br.x, br.vx, br.w, dt, GAP + 2 * R, W - GAP - 2 * R));
   }
 
   const v = speed();
@@ -340,7 +358,7 @@ function step(dt: number) {
 
     for (const br of bricks) {
       if (br.hp <= 0) continue;
-      const hit = circleRect(b.x, b.y, R, br);
+      const hit = circleRect(b.x, b.y, R, br, { x: b.vx, y: b.vy });
       if (!hit) continue;
       if (fireT > 0 && !br.solid && !br.boss) { damage(br, Infinity); continue; } // fireball plows through
       b.x = hit.x; b.y = hit.y;
@@ -352,7 +370,7 @@ function step(dt: number) {
     if (state !== "playing") return;
 
     b.trail.push({ x: b.x, y: b.y });
-    if (b.trail.length > 10) b.trail.shift();
+    if (b.trail.length > (reduceMotion.matches ? 3 : 10)) b.trail.shift();
   }
 
   balls = balls.filter(b => b.y < H + R * 2);
@@ -391,7 +409,10 @@ function updateFx(dt: number) {
   floaters = floaters.filter(f => f.life > 0);
   for (const br of bricks) br.flash = Math.max(0, br.flash - dt * 6);
   shake = Math.max(0, shake - dt * 30);
+  stateT += dt; levelT += dt;
 }
+
+const easeOut = (t: number) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
 
 // ---------- rendering ----------
 const bg = ctx.createLinearGradient(0, 0, 0, H);
@@ -406,17 +427,22 @@ function circle(x: number, y: number, r: number) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
 }
 
-function text(s: string, x: number, y: number, size: number, color = "#e8e8f5", weight = "700", align: CanvasTextAlign = "center") {
-  ctx.fillStyle = color;
+function text(s: string, x: number, y: number, size: number, color = "#e8e8f5", weight = "700", align: CanvasTextAlign = "center", outline = false) {
   ctx.font = `${weight} ${Math.round(size * ui)}px system-ui, sans-serif`;
   ctx.textAlign = align;
+  if (outline) {
+    // white on a yellow/cyan brick was 1.5:1; a dark rim keeps it readable on anything
+    ctx.lineJoin = "round"; ctx.lineWidth = 3 * ui; ctx.strokeStyle = "#12132a";
+    ctx.strokeText(s, x, y);
+  }
+  ctx.fillStyle = color;
   ctx.fillText(s, x, y);
 }
 
 function drawBrick(br: Brick) {
   if (br.boss) return drawBoss(br);
   if (br.solid) {
-    ctx.fillStyle = "#4a4d70"; rr(br.x, br.y, br.w, br.h, 4);
+    ctx.fillStyle = "#666a94"; rr(br.x, br.y, br.w, br.h, 4); // 3.1:1+ on the field, was under 2.3
     ctx.fillStyle = "rgba(255,255,255,.12)";
     for (let i = 6; i < br.w; i += 10) ctx.fillRect(br.x + i, br.y + 3, 2, br.h - 6);
   } else {
@@ -450,27 +476,46 @@ function drawBoss(br: Brick) {
   if (br.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${br.flash * 0.6})`; rr(br.x, br.y, br.w, br.h, 12); }
 }
 
-function overlay(title: string, lines: string[] = []) {
+function overlay(title: string, lines: string[] = [], animate = true) {
+  // fades/rises in over 250ms; pause is keyboard-driven and frequent, so it opts out
+  const e = animate ? easeOut(stateT / 0.25) : 1;
+  const rise = reduceMotion.matches ? 0 : (1 - e) * 8;
+  // capped: at the full phone scale (x1.8) the title ran into the bricks
+  const big = Math.min(ui, 1.35) / ui, line = Math.min(ui, 1.5);
+  ctx.globalAlpha = e;
   ctx.fillStyle = "rgba(12,13,30,.72)";
   ctx.fillRect(0, 0, W, H);
-  text(title, W / 2, H / 2 - 10 * ui, 44, "#ffffff", "800");
-  lines.forEach((l, i) => text(l, W / 2, H / 2 + (30 + i * 28) * ui, 18, "#c9c9e6", "500"));
+  text(title, W / 2, H / 2 - 10 * line + rise, 44 * big, "#ffffff", "800");
+  lines.forEach((l, i) => text(l, W / 2, H / 2 + (30 + i * 28) * line + rise, 18 * line / ui, "#c9c9e6", "500"));
+  ctx.globalAlpha = 1;
 }
 
 function draw() {
   ui = clamp(W / (canvas.clientWidth || W), 1, 1.8);
   ctx.save();
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  if (shake > 0 && !reduceMotion.matches) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
-  for (const br of bricks) if (br.hp > 0) drawBrick(br);
+  // a new level's rows drop in one after another (40ms apart) instead of popping in at once
+  for (const br of bricks) if (br.hp > 0) {
+    const e = easeOut((levelT - br.row * 0.04) / 0.25);
+    if (e < 1) {
+      ctx.save();
+      ctx.globalAlpha = e;
+      if (!reduceMotion.matches) ctx.translate(0, (e - 1) * 12);
+      drawBrick(br);
+      ctx.restore();
+    } else drawBrick(br);
+  }
 
+  // on a phone the 28x16 pill was ~16x9 CSS px with a 7px letter: scale it up (capped) like the text
+  const ps = Math.min(ui, 1.5);
   for (const p of powers) {
     const c = POWER[p.type];
     ctx.shadowColor = c.color; ctx.shadowBlur = 12;
-    ctx.fillStyle = c.color; rr(p.x - 14, p.y - 8, 28, 16, 8);
+    ctx.fillStyle = c.color; rr(p.x - 14 * ps, p.y - 8 * ps, 28 * ps, 16 * ps, 8 * ps);
     ctx.shadowBlur = 0;
-    text(c.label, p.x, p.y + 5, 13 / ui, "#12132a", "800");
+    text(c.label, p.x, p.y + 5 * ps, 13 * ps / ui, "#12132a", "800");
   }
 
   ctx.fillStyle = "#ff8af0";
@@ -509,18 +554,25 @@ function draw() {
   ctx.globalAlpha = 1;
   for (const f of floaters) {
     ctx.globalAlpha = Math.min(1, f.life * 2);
-    text(f.text, f.x, f.y, 14, "#ffffff", "800");
+    text(f.text, f.x, f.y, 14, "#ffffff", "800", "center", true);
   }
   ctx.globalAlpha = 1;
   ctx.restore();
 
-  // status strip (outside the shake)
-  const fx: string[] = [];
-  if (wideT > 0) fx.push(`WIDE ${Math.ceil(wideT)}`);
-  if (slowT > 0) fx.push(`SLOW ${Math.ceil(slowT)}`);
-  if (laserT > 0) fx.push(`LASER ${Math.ceil(laserT)}`);
-  if (fireT > 0) fx.push(`FIRE ${Math.ceil(fireT)}`);
-  if (fx.length) text(fx.join("  "), 12, 26, 12, "#9d9dc4", "700", "left");
+  // power-up timers (outside the shake): a draining bar in the power's color. The old
+  // "WIDE 12 LASER 8" text grew with ui on phones and ran into the boss bar.
+  const timers: [PowerType, number][] = [["wide", wideT], ["slow", slowT], ["laser", laserT], ["fire", fireT]];
+  let ti = 0;
+  for (const [type, t] of timers) {
+    if (t <= 0) continue;
+    // last 2s: blink at 4Hz so running out isn't a surprise (opacity only)
+    const blink = t < 2 && Math.floor(t * 8) % 2 === 0 ? 0.35 : 1;
+    const y = 12 + ti++ * 10;
+    ctx.fillStyle = "rgba(255,255,255,.1)"; rr(12, y, 48, 6, 3);
+    ctx.globalAlpha = blink;
+    ctx.fillStyle = POWER[type].color; rr(12, y, 48 * (t / POWER_TIME[type]!), 6, 3);
+    ctx.globalAlpha = 1;
+  }
   if (combo > 1) text(`Combo ×${Math.min(combo, MAX_COMBO)}`, W - 12, 26, 15, "#feca57", "800", "right");
 
   const boss = bricks.find(b => b.boss && b.hp > 0);
@@ -535,8 +587,9 @@ function draw() {
     text(`Level ${level + 1} · ${levelAt(level).def.name}`, W / 2, PADDLE_Y - 70 * ui, 22, "#ffffff", "800");
     text("Click, tap or Space to launch", W / 2, PADDLE_Y - 40 * ui, 16, "#c9c9e6", "500");
   }
-  if (state === "menu") overlay("Brick Breaker", ["Pick a difficulty and press Start", `${LEVELS.length} levels, then a boss. Then it loops, faster.`]);
-  if (state === "paused") overlay("Paused", ["Press P or Esc to resume"]);
+  // the page h1 already says "Brick Breaker" right above the canvas
+  if (state === "menu") overlay("Ready?", ["Pick a difficulty and press Start", `${LEVELS.length} levels, then a boss. Then it loops, faster.`]);
+  if (state === "paused") overlay("Paused", ["Press P or Esc to resume"], false);
   if (state === "clear") overlay(`Level ${level + 1} cleared!`, [`Bonus +${clearBonus.toLocaleString()}`, `Next: ${levelAt(level + 1).def.name}`]);
   if (state === "over") overlay("Game Over", [`Score ${score.toLocaleString()} · reached level ${level + 1}`, newBest ? "New best score!" : `Best ${best.toLocaleString()}`]);
 }
@@ -553,7 +606,7 @@ function frame(now: number) {
     acc = 0;
     if (state === "clear" && (clearT -= dt) <= 0) startLevel(level + 1);
   }
-  updateFx(dt);
+  if (state !== "paused") updateFx(dt); // effects freeze behind "Paused" instead of playing out
   draw();
   requestAnimationFrame(frame);
 }
@@ -576,6 +629,15 @@ function pointerTo(clientX: number) {
   paddleX = clamp(x - paddleW / 2, 0, W - paddleW);
 }
 
+// Touch drags the paddle by how far the finger moves, not to where it is: with absolute
+// positioning the thumb sat right on top of the paddle and hid the ball.
+let touchStartX = 0, touchStartPaddle = 0;
+function dragTo(clientX: number) {
+  if (state !== "playing") return;
+  const rect = canvas.getBoundingClientRect();
+  paddleX = clamp(touchStartPaddle + (clientX - touchStartX) * (W / rect.width), 0, W - paddleW);
+}
+
 startBtn.addEventListener("click", () => { newGame(); startBtn.blur(); });
 pauseBtn.addEventListener("click", () => { togglePause(); pauseBtn.blur(); });
 muteBtn.addEventListener("click", () => { muted = !muted; store.set("bb-muted", muted ? "1" : "0"); syncMute(); muteBtn.blur(); });
@@ -594,15 +656,25 @@ nameDialog.addEventListener("close", () => {
   nameDialog.returnValue = "";
 });
 
-canvas.addEventListener("mousemove", e => pointerTo(e.clientX));
+// on window, not the canvas: a fast flick past the edge used to leave the paddle short of the wall
+addEventListener("mousemove", e => pointerTo(e.clientX));
 canvas.addEventListener("click", launch);
-canvas.addEventListener("touchstart", e => { pointerTo(e.touches[0].clientX); launch(); e.preventDefault(); }, { passive: false });
-canvas.addEventListener("touchmove", e => { pointerTo(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+canvas.addEventListener("touchstart", e => {
+  touchStartX = e.touches[0].clientX; touchStartPaddle = paddleX;
+  launch(); e.preventDefault();
+}, { passive: false });
+canvas.addEventListener("touchmove", e => { dragTo(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
 
 addEventListener("keydown", e => {
   if (nameDialog.open || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-  if (e.key === "ArrowLeft" || e.key === "a") keys.left = true;
-  else if (e.key === "ArrowRight" || e.key === "d") keys.right = true;
+  // a focused button handles its own Enter/Space (otherwise Enter on "Sound" started a game)
+  if (e.target instanceof HTMLButtonElement && (e.key === "Enter" || e.key === " ")) return;
+  const move = e.key === "ArrowLeft" || e.key === "ArrowRight" || e.code === "KeyA" || e.code === "KeyD";
+  // held keys repeat: holding Enter past the high-score dialog started a new game, P/M flickered
+  if (e.repeat && !move) { if (e.key === " " || e.key === "Enter") e.preventDefault(); return; }
+  // e.code, not e.key: with Shift or Caps Lock the key is "A", and keyup never cleared it
+  if (e.key === "ArrowLeft" || e.code === "KeyA") keys.left = true;
+  else if (e.key === "ArrowRight" || e.code === "KeyD") keys.right = true;
   else if (e.key === " ") launch();
   else if (e.key === "p" || e.key === "P" || e.key === "Escape") togglePause();
   else if (e.key === "Enter" && (state === "menu" || state === "over")) newGame();
@@ -611,11 +683,20 @@ addEventListener("keydown", e => {
   e.preventDefault();
 });
 addEventListener("keyup", e => {
-  if (e.key === "ArrowLeft" || e.key === "a") keys.left = false;
-  if (e.key === "ArrowRight" || e.key === "d") keys.right = false;
+  if (e.key === "ArrowLeft" || e.code === "KeyA") keys.left = false;
+  if (e.key === "ArrowRight" || e.code === "KeyD") keys.right = false;
 });
-// releasing a key while the window is unfocused never fires keyup, so the paddle would drift forever
-addEventListener("blur", () => { keys.left = keys.right = false; });
+// releasing a key while the window is unfocused never fires keyup, so the paddle would drift forever;
+// and alt-tabbing away kept the game running and cost lives
+addEventListener("blur", () => { keys.left = keys.right = false; if (state === "playing") togglePause(); });
+addEventListener("pagehide", saveBest);
+// another tab saved a score: pick it up instead of overwriting it with this tab's stale list
+addEventListener("storage", e => {
+  if (e.key !== "bb-top") return;
+  top = parseScores(e.newValue);
+  best = Math.max(best, top[0]?.score ?? 0);
+  renderTop(); updateHud();
+});
 document.addEventListener("visibilitychange", () => { if (document.hidden && state === "playing") togglePause(); });
 
 // dev-only handle for browser tests; import.meta.env.DEV is false in `vite build`, so this is stripped from production
@@ -623,6 +704,7 @@ if (import.meta.env.DEV) Object.assign(window, {
   __bb: {
     get state() { return state; }, get score() { return score; }, get level() { return level; }, get lives() { return lives; },
     get balls() { return balls; }, get bricks() { return bricks; }, get paddleW() { return paddleW; }, get top() { return top; },
+    get paddleX() { return paddleX; },
     setPaddle(x: number) { paddleX = clamp(x, 0, W - paddleW); },
     launch, applyPower, startLevel,
     dropAll() { lives = 1; for (const b of balls) { b.stuck = false; b.y = H + 50; } },

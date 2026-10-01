@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 // window.__bb is a dev-only handle exposed by main.ts
 type BB = {
-  state: string; score: number; level: number; lives: number; paddleW: number;
+  state: string; score: number; level: number; lives: number; paddleW: number; paddleX: number;
   balls: { x: number; y: number; stuck: boolean }[];
   bricks: { x: number; w: number; hp: number; solid: boolean; boss?: boolean }[];
   top: unknown[];
@@ -151,4 +151,59 @@ test("P pauses, Esc resumes", async ({ page }) => {
 
 test("no horizontal scroll", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+});
+
+test("the high-score dialog shows the score, and a held Enter doesn't start a new game", async ({ page }) => {
+  await page.click("#start");
+  await autopilot(page);
+  await expect.poll(() => bb(page, b => b.score), { timeout: 15000 }).toBeGreaterThan(0);
+  await stopAutopilot(page);
+  await bb(page, b => b.dropAll());
+  const score = await bb(page, b => b.score);
+  await expect(page.locator("#nameDialog")).toBeVisible();
+  await expect(page.locator("#nameScore")).toContainText(score.toLocaleString("en-US"));
+  await page.keyboard.press("Enter");
+  // the OS keeps sending keydown (repeat) while Enter is held after the dialog closed
+  await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true })));
+  expect(await bb(page, b => b.state)).toBe("over");
+});
+
+test("releasing A while Shift is down still stops the paddle", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "keyboard");
+  await page.click("#start");
+  await bb(page, b => b.setPaddle(300));
+  await page.keyboard.down("a");
+  await page.keyboard.down("Shift");
+  await page.keyboard.up("a"); // arrives as key "A"
+  await page.keyboard.up("Shift");
+  const x = await bb(page, b => b.paddleX);
+  await page.waitForTimeout(250);
+  expect(await bb(page, b => b.paddleX)).toBe(x);
+});
+
+test("touch drags the paddle by the finger's movement instead of jumping under it", async ({ page }, info) => {
+  test.skip(info.project.name !== "mobile", "touch");
+  await page.click("#start");
+  await bb(page, b => b.setPaddle(270));
+  const moved = await page.evaluate(() => {
+    const c = document.querySelector("canvas")!, r = c.getBoundingClientRect();
+    const t = (x: number) => new Touch({ identifier: 1, target: c, clientX: x, clientY: r.top + r.height / 2 });
+    const x0 = r.right - 10; // far right edge: absolute positioning would slam the paddle there
+    c.dispatchEvent(new TouchEvent("touchstart", { touches: [t(x0)], cancelable: true, bubbles: true }));
+    const afterTap = window.__bb.paddleX;
+    c.dispatchEvent(new TouchEvent("touchmove", { touches: [t(x0 - 40)], cancelable: true, bubbles: true }));
+    return { afterTap, afterDrag: window.__bb.paddleX, scale: 640 / r.width };
+  });
+  expect(moved.afterTap).toBe(270);
+  expect(moved.afterDrag).toBeCloseTo(270 - 40 * moved.scale, 0);
+});
+
+test("a phone in landscape shows the whole game area", async ({ page }, info) => {
+  test.skip(info.project.name !== "mobile", "phone");
+  await page.setViewportSize({ width: 915, height: 412 });
+  await page.click("#start");
+  const box = await page.locator("canvas").boundingBox(); // viewport-relative
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(412); // paddle row included
+  expect(box!.width / box!.height).toBeCloseTo(4 / 3, 1);
 });
