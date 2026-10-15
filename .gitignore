@@ -4,3 +4,7 @@ dist/
 test-results/
 playwright-report/
 .vercel
+
+.env
+.env.*
+!.env.example
